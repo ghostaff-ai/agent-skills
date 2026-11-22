@@ -693,7 +693,7 @@ test('ciGates: a docs-only diff matches no gate and owes nothing — still UNVER
 
 test('legacy ciPaths/requiredLanes load as one gate with unchanged behaviour', () => {
   const legacy = loadConfig(repoWithConfig({ ciPaths: ['src/'], requiredLanes: [MAIN_LANE] }));
-  assert.deepEqual(legacy.ciGates, [{ workflow: null, paths: ['src/'], requiredLanes: [MAIN_LANE] }]);
+  assert.deepEqual(legacy.ciGates, [{ workflow: null, paths: ['src/'], pathsIgnore: [], requiredLanes: [MAIN_LANE] }]);
   assert.equal('ciPaths' in legacy, false, 'one representation after load');
 
   assert.equal(ciCovers(['src/a.ts'], legacy), true);
@@ -719,6 +719,81 @@ test('ciGates: malformed or ambiguous config is rejected at load', () => {
   assert.throws(bad({ ciGates: [{ workflow: 'a.yml', paths: [] }] }), /paths/);
   assert.throws(bad({ ciGates: [{ workflow: 'a.yml', paths: ['x/'], requiredLanes: 'Lint' }] }), /requiredLanes/);
   assert.deepEqual(loadConfig(repoWithConfig({ ciGates: [{ workflow: 'a.yml', paths: ['x/'] }] })).ciGates[0].requiredLanes, []);
+});
+
+// ---------------------------------------------------------------------------
+// pathsIgnore — a workflow filtered by `paths-ignore` instead of `paths`.
+//
+// The shape of ghostaff-ai/app's ci.yml: `paths-ignore: ['**/*.md', 'docs/**']`
+// and no `paths`. `paths: ["**"]` alone would wait on a docs-only PR for a run
+// GitHub never starts; listing the covered directories would read a new root
+// directory as "no CI applies" and merge it unverified.
+// ---------------------------------------------------------------------------
+
+const { filterMatcher } = require('../pr-land.js');
+
+const APP_LANE = 'Typecheck and unit tests';
+const ignoring = loadConfig(repoWithConfig({
+  ciGates: [{ workflow: 'ci.yml', paths: ['**'], pathsIgnore: ['**/*.md', 'docs/**'], requiredLanes: [APP_LANE] }],
+}));
+
+test('pathsIgnore: a diff made only of ignored files dispatches nothing — UNVERIFIED, owes no lane', () => {
+  for (const files of [['README.md'], ['apps/mobile/README.md'], ['docs/plans/a.md', 'docs/img/b.png'], ['README.md', 'docs/x.json']]) {
+    assert.equal(ciCovers(files, ignoring), false, files.join(', '));
+    assert.deepEqual(requiredLanesFor(files, ignoring), []);
+  }
+});
+
+test('pathsIgnore: one counted file dispatches the workflow, and owes its lanes', () => {
+  assert.equal(ciCovers(['docs/a.md', 'apps/mobile/app.tsx'], ignoring), true);
+  assert.deepEqual(requiredLanesFor(['README.md', 'package.json'], ignoring), [APP_LANE]);
+  assert.equal(ciCovers(['brand-new-root-dir/x.ts'], ignoring), true, 'a new directory is covered, not forgotten');
+  assert.equal(ciCovers(['notes.mdx'], ignoring), true, '*.md is not *.mdx');
+  assert.equal(ciCovers(['docsite/index.html'], ignoring), true, 'docs/** is not a docs* prefix');
+  assert.equal(ciCovers([], ignoring), false);
+});
+
+test('pathsIgnore: glob semantics follow GitHub for * and **', () => {
+  const m = (p, f) => filterMatcher(p)(f);
+  assert.equal(m('**/*.md', 'README.md'), true, '**/ may match no directory');
+  assert.equal(m('**/*.md', 'a/b/c.md'), true);
+  assert.equal(m('*.md', 'README.md'), true);
+  assert.equal(m('*.md', 'a/README.md'), false, '* never crosses a /');
+  assert.equal(m('docs/*', 'docs/a.md'), true);
+  assert.equal(m('docs/*', 'docs/a/b.md'), false);
+  assert.equal(m('docs/**', 'docs/a/b.md'), true);
+  assert.equal(m('a.b/*.md', 'aXb/c.md'), false, 'a dot is literal');
+  // No `*`: this file's own path convention, as in `paths`.
+  assert.equal(m('docs/', 'docs/a/b.png'), true);
+  assert.equal(m('CHANGELOG.md', 'CHANGELOG.md'), true);
+  assert.equal(m('CHANGELOG.md', 'sub/CHANGELOG.md'), false);
+});
+
+test('pathsIgnore: it narrows a paths-filtered gate too', () => {
+  const both = loadConfig(repoWithConfig({
+    ciGates: [{ workflow: 'ci.yml', paths: ['src/'], pathsIgnore: ['src/**/*.md'] }],
+  }));
+  assert.equal(ciCovers(['src/README.md'], both), false);
+  assert.equal(ciCovers(['src/a.ts', 'src/README.md'], both), true);
+});
+
+test('pathsIgnore: absent means empty, and nothing changes for gates without it', () => {
+  assert.deepEqual(gated.ciGates.map((g) => g.pathsIgnore), [[], []]);
+  assert.equal(ciCovers(['docs/x.md'], gated), false);
+  // A gate built by hand, without the key, is read as before.
+  assert.equal(ciCovers(['src/a.ts'], cfg), true);
+  assert.equal(ciCovers(['README.md'], cfg), false);
+  const all = loadConfig(repoWithConfig({ ciGates: [{ workflow: 'ci.yml', paths: ['**'] }] }));
+  assert.equal(ciCovers(['docs/anything.md'], all), true);
+});
+
+test('pathsIgnore: malformed or unsupported patterns are rejected at load', () => {
+  const bad = (pathsIgnore) => () => loadConfig(repoWithConfig({ ciGates: [{ workflow: 'a.yml', paths: ['**'], pathsIgnore }] }));
+  assert.throws(bad('docs/'), /pathsIgnore must be a list/);
+  assert.throws(bad(['']), /pathsIgnore must be a list/);
+  for (const p of ['docs/?.md', '!docs/keep.md', 'docs/[ab].md', 'a+.md']) {
+    assert.throws(bad([p]), /only \* and \*\* are supported/, p);
+  }
 });
 
 // --- the merge queue, as observed --------------------------------------------
