@@ -45,12 +45,45 @@ test('a renamed file keeps one history under its newest name, through a chain', 
   assert.deepEqual(commits.map((c) => c.files), [['src/C.ts'], ['src/C.ts'], ['src/C.ts'], ['src/C.ts']]);
 });
 
-test('a named test means a test named after the file, not any path containing its stem', () => {
-  const tests = ['tests/test_ci_changed_services.py', 'src/__tests__/worker.test.ts', 'tests/test_job_store.py'];
-  assert.equal(m.hasNamedTest('ansible/playbooks/services.yml', tests), false);
-  assert.equal(m.hasNamedTest('src/worker.ts', tests), true);
-  assert.equal(m.hasNamedTest('src/job_store.py', tests), true);
-  assert.equal(m.hasNamedTest('src/index.ts', tests), null);
+test('tested means a test imports the module, not that a test is named after it', () => {
+  const tracked = [
+    'package.json', 'tsconfig.json',
+    'packages/shared/package.json', 'packages/shared/src/services/municipalityService.ts', 'packages/shared/src/services/onlyMocked.ts',
+    'packages/shared/src/index.ts', 'packages/shared/vite.config.ts',
+    'apps/mobile/app/__tests__/home.test.tsx', 'apps/mobile/lib/alias.ts', 'apps/mobile/lib/untouched.ts', 'apps/mobile/types.d.ts',
+    'services/x/src/worker.py', 'services/x/src/pkg/__init__.py', 'services/x/src/pkg/store.py', 'services/x/tests/test_y.py', 'services/x/src/pkg2/b.py',
+    'services/x/src/rel.py', 'services/x/src/tests/test_rel.py', 'scripts/clone-all.py', 'scripts/test_clone.py',
+  ];
+  const files = {
+    'packages/shared/package.json': '{ "name": "@acme/shared" }',
+    'tsconfig.json': '{ // paths\n "compilerOptions": { "baseUrl": ".", "paths": { "@lib/*": ["apps/mobile/lib/*"], }, } }',
+    'apps/mobile/app/__tests__/home.test.tsx': [
+      "import { getActive } from '@acme/shared/services/municipalityService';",
+      "import x from '@acme/shared/services/onlyMocked';",
+      "jest.mock('@acme/shared/services/onlyMocked', () => ({}));",
+      "const a = require('@lib/alias');",
+      "import 'react';",
+    ].join('\n'),
+    'services/x/tests/test_y.py': 'from pkg import store\nimport worker\nfrom pkg2 import (\n    a,\n    b,\n)\n',
+    'services/x/src/tests/test_rel.py': 'from ..rel import thing\n',
+    'scripts/test_clone.py': 'SCRIPT = ROOT / "clone-all.py"\n',
+  };
+  const testFiles = tracked.filter(m.isTest);
+  const { tested, importable } = m.testedByImport(tracked, testFiles, (p) => files[p]);
+  assert.deepEqual([...tested].sort(), [
+    'apps/mobile/lib/alias.ts',
+    'packages/shared/src/services/municipalityService.ts',
+    'scripts/clone-all.py',
+    'services/x/src/pkg/__init__.py',
+    'services/x/src/pkg/store.py',
+    'services/x/src/pkg2/b.py',
+    'services/x/src/rel.py',
+    'services/x/src/worker.py',
+  ]);
+  assert.ok(!importable.includes('packages/shared/vite.config.ts'), 'config is not a module');
+  assert.ok(!importable.includes('apps/mobile/types.d.ts'), 'typings are not a module');
+  assert.ok(importable.includes('apps/mobile/lib/untouched.ts'));
+  assert.ok(!tested.has('packages/shared/src/services/onlyMocked.ts'), 'a module a test only mocks is not tested by it');
 });
 
 test('co-change marks partners in another module, and needs two shared commits', () => {
@@ -94,6 +127,7 @@ test('measures a real repo end to end, read-only', () => {
   write('docs/plans/ideas/old-idea.md', '# Old idea\n\n**Priority:** low\n');
   write('src/Old.ts', 'a\n');
   write('src/strings/en.json', '{}\n');
+  write('src/__tests__/new.test.ts', "import { a } from '../New';\n");
   g('add', '.');
   g('commit', '-qm', 'init');
   g('mv', 'src/Old.ts', 'src/New.ts');
@@ -122,4 +156,7 @@ test('measures a real repo end to end, read-only', () => {
   assert.equal(out.agents.enhance, 'Never propose a rewrite.');
   assert.deepEqual(out.backlog.ideas, [{ path: 'docs/plans/ideas/old-idea.md', title: 'Old idea', priority: 'low', gate: null }]);
   assert.equal(out.size.fanoutEligible, false);
+  assert.equal(hot['src/New.ts'].tested, true);
+  assert.equal(hot['src/other.ts'].tested, false);
+  assert.deepEqual(out.tests, { testFiles: 1, importable: 2, untested: 1, untestedSample: ['src/other.ts'] });
 });

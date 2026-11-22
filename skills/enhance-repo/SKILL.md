@@ -106,7 +106,7 @@ the script cannot produce, per lens:
   Look for shallow modules, one concept spread over many files, the same rule or threshold
   in several places, logic tested only through mocks.
 - **reliability** (code): `gh run list -L 50` (failure rate per workflow, reruns of one
-  SHA); incident titles ("what still bites" lives there); hot files with no named test;
+  SHA); incident titles ("what still bites" lives there); hot files no test imports (`hot[].tested`, and `tests.untested` for the whole repo);
   manual deploy steps; secrets and config hazards.
 - **product** (code or record): the repo's stated purpose, its plans and decisions,
   `gh issue list --state open`, what recent commits keep circling. Be bold — "interesting"
