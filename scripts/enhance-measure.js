@@ -146,19 +146,180 @@ function coChange(commits, file, keep, limit = 8) {
     .map(([path, n]) => ({ path, n, crossModule: moduleOf(path) !== moduleOf(file) }));
 }
 
+// ---------------------------------------------------------------- tested by import
+
+// "Tested" means a test file imports the module, not that a test is named after it: a
+// name match called cultuvilla/app's `municipalityService` untested while four suites
+// import it. A module a test only mocks is not tested by that test; a script a test runs
+// by its file name is tested by it.
+
+const JS_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts', '.vue', '.svelte', '.astro'];
+const CODE_RE = /\.(tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|py)$/;
+const NOT_A_MODULE_RE = /(\.d\.ts$|(^|\/)[^/]*\.config\.[a-z]+$|(^|\/)(conftest|setup|manage)\.py$|(^|\/)__init__\.py$)/;
+
+/** A source file a test could import: code in JS/TS or Python, not config or typings. */
+const isImportable = (p) => isSource(p) && CODE_RE.test(p) && !NOT_A_MODULE_RE.test(p);
+
+/** Specifiers a JS/TS test imports, and the ones it mocks. */
+function jsImports(text) {
+  const imports = new Set();
+  const mocks = new Set();
+  const importRe = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*|\brequireActual\s*\(\s*|\bimportActual\s*\(\s*)['"]([^'"\n]+)['"]/g;
+  const mockRe = /\b(?:jest|vi)\.(?:mock|doMock)\s*\(\s*['"]([^'"\n]+)['"]/g;
+  for (const m of text.matchAll(importRe)) imports.add(m[1]);
+  for (const m of text.matchAll(mockRe)) mocks.add(m[1]);
+  return { imports, mocks };
+}
+
+/** Dotted modules a Python test imports, relative ones as `.x` / `..x`. */
+function pyImports(text) {
+  const mods = new Set();
+  for (const m of text.matchAll(/^[ \t]*from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(?:\(([^)]*)\)|([\w \t,]+))/gm)) {
+    mods.add(m[1]);
+    for (const name of (m[2] ?? m[3]).split(',').map((n) => n.trim().split(/\s+/)[0]).filter(Boolean)) {
+      mods.add(m[1].endsWith('.') ? m[1] + name : `${m[1]}.${name}`);
+    }
+  }
+  for (const m of text.matchAll(/^[ \t]*import[ \t]+([\w.]+(?:[ \t]*,[ \t]*[\w.]+)*)/gm)) {
+    for (const name of m[1].split(',')) mods.add(name.trim());
+  }
+  return mods;
+}
+
+/** JSON with comments and trailing commas, as tsconfig allows; null when unreadable. */
+function looseJson(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text.replace(/("(?:\\.|[^"\\])*")|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m, str) => str || '').replace(/,(\s*[}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Whether a test file is named after this file (`test_<stem>`, `<stem>.test.*`,
- * `<stem>_test.*`, `<stem>.spec.*`): a heuristic for "has a test of its own". Null
- * for stems too generic to tell.
+ * How bare specifiers map to paths in this repo: workspace package names
+ * (`@scope/shared/x` → `packages/shared/{,src/}x`) and tsconfig `paths` aliases.
+ * Returns [prefix, [dir, ...]] pairs, longest prefix first.
  */
-function hasNamedTest(file, testFiles) {
-  const stem = file.split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
-  if (stem.length < 3 || ['index', 'main', 'init', '__init__', 'mod', 'lib', 'app', 'config'].includes(stem)) return null;
-  const names = new Set([`test_${stem}`, `${stem}_test`, `${stem}.test`, `${stem}.spec`, `${stem}.vitest`, `test-${stem}`]);
-  return testFiles.some((t) => {
-    const base = t.split('/').pop().toLowerCase();
-    return [...names].some((n) => base === n || base.startsWith(`${n}.`));
+function aliasesOf(tracked, read) {
+  const pairs = [];
+  for (const p of tracked) {
+    const base = p.split('/').pop();
+    const dir = p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+    if (base === 'package.json' && dir && !/node_modules\//.test(p)) {
+      const name = (looseJson(read(p)) || {}).name;
+      if (name) pairs.push([name + '/', [dir + '/', dir + '/src/']], [name, [dir + '/index', dir + '/src/index']]);
+    } else if (/^tsconfig[\w.]*\.json$/.test(base)) {
+      const opts = (looseJson(read(p)) || {}).compilerOptions || {};
+      const root = [dir, opts.baseUrl && opts.baseUrl !== '.' ? opts.baseUrl.replace(/^\.\//, '') : ''].filter(Boolean).join('/');
+      for (const [key, targets] of Object.entries(opts.paths || {})) {
+        const dirs = (targets || []).map((t) => [root, t.replace(/^\.\//, '')].filter(Boolean).join('/').replace(/\*.*$/, ''));
+        pairs.push([key.replace(/\*.*$/, ''), dirs]);
+      }
+    }
+  }
+  return pairs.filter(([k]) => k).sort((a, b) => b[0].length - a[0].length);
+}
+
+function normalize(p) {
+  const out = [];
+  for (const part of p.split('/')) {
+    if (part === '..') out.pop();
+    else if (part && part !== '.') out.push(part);
+  }
+  return out.join('/');
+}
+
+/** The tracked file a JS/TS specifier from `from` lands on, or null. */
+function resolveJs(spec, from, exists, aliases) {
+  let bases = [];
+  if (spec.startsWith('.')) bases = [normalize(`${from.slice(0, from.lastIndexOf('/') + 1)}${spec}`)];
+  else if (spec.startsWith('/')) bases = [normalize(spec)];
+  else {
+    for (const [prefix, dirs] of aliases) {
+      if (spec === prefix || spec.startsWith(prefix)) {
+        bases = dirs.map((d) => normalize(d + spec.slice(prefix.length)));
+        break;
+      }
+    }
+  }
+  for (const b of bases) {
+    const stem = b.replace(/\.(js|jsx|mjs|cjs)$/, '');
+    for (const c of [b, ...JS_EXTS.map((e) => stem + e), ...JS_EXTS.map((e) => `${b}/index${e}`)]) if (exists.has(c)) return c;
+  }
+  return null;
+}
+
+/**
+ * Source modules no test imports. `read(path)` returns a file's text at the measured ref.
+ * Returns { tested: Set, importable: [...] }.
+ */
+function testedByImport(tracked, testFiles, read) {
+  const exists = new Set(tracked);
+  const aliases = aliasesOf(tracked, read);
+  const pyFiles = tracked.filter((p) => p.endsWith('.py'));
+  const pyBySuffix = (dotted) => {
+    const rel = dotted.replace(/\./g, '/');
+    return pyFiles.filter((p) => p === `${rel}.py` || p.endsWith(`/${rel}.py`) || p === `${rel}/__init__.py` || p.endsWith(`/${rel}/__init__.py`));
+  };
+  // A script a test runs as a subprocess is named in it as a string: `"clone-all.py"`.
+  const scripts = new Map();
+  for (const p of tracked.filter(isImportable)) {
+    const base = p.split('/').pop();
+    if (/^[\w-]{3,}\.(py|m?js|ts)$/.test(base) && !/^index\./.test(base)) scripts.set(base, [...(scripts.get(base) || []), p]);
+  }
+  const tested = new Set();
+  for (const t of testFiles) {
+    const text = read(t);
+    if (!text) continue;
+    for (const m of text.matchAll(/['"`/]([\w-]{3,}\.(?:py|m?js|ts))['"`]/g)) {
+      const hits = scripts.get(m[1]) || [];
+      if (hits.length === 1) tested.add(hits[0]);
+    }
+    if (t.endsWith('.py')) {
+      const dir = t.split('/').slice(0, -1);
+      for (const mod of pyImports(text)) {
+        if (mod.startsWith('.')) {
+          const ups = mod.match(/^\.+/)[0].length;
+          const rest = mod.slice(ups).replace(/\./g, '/');
+          const base = dir.slice(0, dir.length - (ups - 1)).concat(rest ? [rest] : []).join('/');
+          for (const c of [`${base}.py`, `${base}/__init__.py`]) if (exists.has(c)) tested.add(c);
+        } else {
+          for (const p of pyBySuffix(mod)) tested.add(p);
+        }
+      }
+    } else if (CODE_RE.test(t)) {
+      const { imports, mocks } = jsImports(text);
+      const mocked = new Set([...mocks].map((s) => resolveJs(s, t, exists, aliases)).filter(Boolean));
+      for (const s of imports) {
+        const hit = resolveJs(s, t, exists, aliases);
+        if (hit && !mocked.has(hit)) tested.add(hit);
+      }
+    }
+  }
+  return { tested, importable: tracked.filter(isImportable) };
+}
+
+/** Read many files at one ref through a single `git cat-file --batch`. */
+function readMany(root, ref, paths) {
+  const out = new Map();
+  if (!paths.length) return out;
+  const buf = execFileSync('git', ['cat-file', '--batch'], {
+    cwd: root,
+    input: paths.map((p) => `${ref}:${p}`).join('\n') + '\n',
+    maxBuffer: 1024 * 1024 * 1024,
   });
+  let i = 0;
+  for (const p of paths) {
+    const nl = buf.indexOf(10, i);
+    const head = buf.slice(i, nl).toString();
+    i = nl + 1;
+    if (head.endsWith(' missing')) continue;
+    const size = Number(head.split(' ')[2]);
+    out.set(p, buf.slice(i, i + size).toString('utf8'));
+    i += size + 1;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- repo docs
@@ -246,6 +407,10 @@ function measure(root, opts) {
   const fixes = countBy(fixCommits, keep);
   const testFiles = tracked.filter(isTest);
   const sourceFiles = tracked.filter((f) => isSource(f) && inScope(f));
+  const configs = tracked.filter((p) => /(^|\/)(package\.json|tsconfig[\w.]*\.json)$/.test(p) && !/node_modules\//.test(p));
+  const texts = readMany(root, ref, [...testFiles, ...configs]);
+  const { tested, importable } = testedByImport(tracked, testFiles, (p) => texts.get(p));
+  const untested = importable.filter((p) => inScope(p) && !tested.has(p));
 
   const lines = (f) => {
     const text = readAt(root, ref, f);
@@ -261,7 +426,7 @@ function measure(root, opts) {
     .map((f) => ({
       ...f,
       score: Math.round(f.score),
-      namedTest: hasNamedTest(f.path, testFiles),
+      tested: isImportable(f.path) ? tested.has(f.path) : null,
       coChange: coChange(commits, f.path, keep),
       fixSubjects: fixCommits.filter((c) => c.files.includes(f.path)).slice(0, 5).map((c) => `${c.sha} ${c.subject}`),
     }));
@@ -334,6 +499,12 @@ function measure(root, opts) {
       proseFiles,
       ...sizeSignals({ commits: commits.length, sourceFiles: codeFiles, hottestLines: Math.max(0, ...hot.map((h) => h.lines)) }),
     },
+    tests: {
+      testFiles: testFiles.length,
+      importable: importable.filter(inScope).length,
+      untested: untested.length,
+      untestedSample: untested.slice(0, 40),
+    },
     hot,
     modules: [...modules.values()].sort((a, b) => b.churn - a.churn).slice(0, 15),
     agents: {
@@ -358,4 +529,4 @@ if (require.main === module) {
   process.stdout.write(JSON.stringify(measure(repoRoot(), opts), null, 2) + '\n');
 }
 
-module.exports = { parseLog, isFix, isSource, isTest, isNoise, moduleOf, coChange, hasNamedTest, section, planHead, sizeSignals, measure };
+module.exports = { parseLog, isFix, isSource, isTest, isNoise, moduleOf, coChange, jsImports, pyImports, resolveJs, testedByImport, isImportable, section, planHead, sizeSignals, measure };
