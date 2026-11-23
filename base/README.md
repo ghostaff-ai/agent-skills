@@ -19,6 +19,7 @@ full text.
   commands or people stays in that repo's `AGENTS.md`, outside the markers.
 - **Only what is already repeated.** A section earns a file here once two repos carry the
   same text. A rule only one repo needs is not base.
+  `ui` is the one exception: Álvaro asked for it before any repo carried it (2026-11-23).
 - **Prose is the weakest enforcement.** Nothing fails when an agent skips a sentence. A
   rule that a script, a lint or a permission can enforce belongs there, and its sentence
   here goes away.
@@ -32,6 +33,7 @@ full text.
 | `autonomy` | repos that adopt `ship-a-feature` | the user decides once, the agent lands |
 | `superpowers` | repos that adopt `ship-a-feature` | which superpowers flows it replaces |
 | `setup` | every repo | where instructions and skills live |
+| `ui` | repos with a user interface | minimal screens, low cognitive load, a guideline review |
 
 ## What enforces each rule
 
@@ -48,3 +50,4 @@ holds. A row with "nothing" is the next candidate.
 | Shipped plan still in `ongoing/` | `proactive` | partly: the scanner reports stale plans |
 | One decision message, then land | `autonomy` | `pr-land.js` enforces the landing half; the asking half is prose |
 | The rest of `proactive`, `health` | | nothing; judgment calls |
+| Minimal, accessible screens | `ui` | nothing; the Vercel guideline review is still an agent reading a list |
