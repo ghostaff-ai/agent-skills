@@ -3,7 +3,7 @@
 The autonomous delivery contract (`skills/ship-a-feature/SKILL.md`), the landing state
 machine behind it (`scripts/pr-land.js`, with its decision table in `scripts/decide.js`),
 and the parallel-batch layer on top: `skills/orchestrate`, `skills/advance-plans`,
-`skills/review-ideas`, `skills/enhance-repo`, `scripts/plans-map.js`, `scripts/agent-env.sh` and the fleet scripts
+`skills/review-ideas`, `skills/enhance-repo`, `skills/harvest`, `scripts/plans-map.js`, `scripts/agent-env.sh` and the fleet scripts
 (`agent-capacity.js`, `agent-dispatch.sh`, `agent-reap.sh`, `pr-land-bg.sh`, `ideas-review-order.js`,
 `enhance-measure.js`, `agent-auto-mode.js`), plus `hooks/guard-lander-kill.sh`. `README.md` explains the wiring and every
 field of `.agents/land.config.json` and `.agents/orchestrate.config.json`.
@@ -42,6 +42,7 @@ and is loaded into every session there. Keep each one short and free of project 
 - `skills/advance-plans/SKILL.md`: builds the approved pool on top of `orchestrate`.
 - `skills/review-ideas/SKILL.md`: verifies `ideas/` against the code and asks for yeses.
 - `skills/enhance-repo/SKILL.md`: files evidence-backed enhancement plans into `ideas/`.
+- `skills/harvest/SKILL.md`: files a sibling repo's verified gaps as plans in the target, with a ledger.
 - `skills/decision-deck/SKILL.md`: brings decisions to the human as a claude.ai deck of cards (`page.html`, `example-card.json`) and reads the answers back.
 - `scripts/pr-land.js`, `scripts/decide.js`: the landing loop (run as `pnpm pr:land` in consumers).
 - `scripts/plans-map.js`: the plans map generator and block validator (agent-plans v2 spec).
