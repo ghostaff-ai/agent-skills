@@ -51,6 +51,11 @@ and is loaded into every session there. Keep each one short and free of project 
 - `scripts/ideas-review-order.js`: `review-ideas`' queue.
 - `scripts/enhance-measure.js`: `enhance-repo`'s evidence — churn, fixes, co-change, backlog, size.
 - `scripts/agent-auto-mode.js`: installs a repo's `.agents/auto-mode.json` classifier policy.
+- `scripts/prune-merged-worktrees.sh`: sweeps clean, landed worktrees (a tool, not a gate).
+- `scripts/check-*.js`: CI checks consumers run (workflow input injection, skill symlinks,
+  Functions loaded memory, Maestro scroll-then-tap); their per-repo values live in the
+  consumer's `.agents/checks.config.json` (`scripts/lib/checks-config.js`). The YAML ones read
+  through `scripts/lib/mini-yaml.js`, which must throw on what it does not understand.
 - `hooks/guard-lander-kill.sh`: `PreToolUse` guard against pattern-wide lander kills.
 - `templates/plans-map.yml`: the workflow consumers copy.
 - `base/*.md`: the guidance several repos' `AGENTS.md` share, one section per file. A repo
