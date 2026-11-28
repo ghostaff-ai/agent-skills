@@ -37,6 +37,11 @@ multiple projects as a git submodule so a single copy is the source of truth.
   pre-approved only where `## Approval` frees them. A repo tunes it with an optional
   `## Enhance` section in its `AGENTS.md`. Plans only; feeds `review-ideas` and
   `advance-plans`.
+- **harvest** — compares a source repo with a sibling target and files each verified gap as
+  a plan in the target: read-only scouts by lens check by purpose, not by name, each gap is
+  classified as identical (move here, vendor into both) or a pattern (port, adapted) and by
+  the target's `## Approval`, and a ledger at `docs/harvest/<source>.md` in the target keeps
+  a recurring run to what is new. Plans only; feeds `review-ideas` and `advance-plans`.
 
 **Base sections**
 
@@ -252,6 +257,15 @@ ln -s ../.agents/_shared/scripts/enhance-measure.js scripts/enhance-measure.js
 ```
 
 Optionally add a `## Enhance` section to `AGENTS.md` (format in the skill).
+
+### Adding the harvest
+
+`harvest` needs no scripts. Link it in the target repo; the ledger it writes,
+`docs/harvest/<source>.md`, is created on the first run:
+
+```sh
+ln -s ../_shared/skills/harvest .agents/skills/harvest
+```
 
 ### Adding the orchestration layer
 
