@@ -78,6 +78,7 @@ const { decide, EXIT, ACTION } = require('./decide.js');
 //     "mergeMethod": "merge",                    // or "squash" / "rebase"
 //     "ciGates": [                               // one per path-filtered workflow
 //       { "workflow": "ci.yml", "paths": ["src/", "package.json"],  // or ["**"]
+//         "pathsIgnore": ["**/*.md", "docs/"],   // optional: its paths-ignore
 //         "requiredLanes": ["Lint + Unit"] }     // skipped/missing == failed
 //     ],
 //     "hardStop": [{ "pattern": "^firestore\\.rules$", "why": "security rules" }],
@@ -133,7 +134,43 @@ const CONFIG_FILENAME = '.agents/land.config.json';
 const isStringList = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string' && x.length > 0);
 
 /**
- * The repo's CI, as a list of gates: `{ workflow, paths, requiredLanes }`.
+ * A GitHub filter pattern of the kind `paths-ignore` lists hold, read the way
+ * GitHub reads it. Supported: `*` (any run of characters but `/`) and `**` (any
+ * run at all; followed by `/` it may also match no directory at all, so the usual
+ * every-Markdown-file pattern covers a root README.md, as it does on GitHub).
+ * An entry with no `*` keeps this file's own convention for paths: a trailing
+ * `/` is a directory prefix, anything else one exact file.
+ *
+ * The rest of GitHub's syntax (`?`, `+`, `[]`, `!`) is rejected at load rather
+ * than half-supported: a pattern read differently here than on GitHub says "CI
+ * will not run" about a diff CI does run on, and the PR merges before its CI ends.
+ */
+const UNSUPPORTED_FILTER_SYNTAX = /[?+[\]!]/;
+
+function filterMatcher(pattern) {
+  if (!pattern.includes('*')) {
+    return pattern.endsWith('/') ? (f) => f.startsWith(pattern) : (f) => f === pattern;
+  }
+  let source = '';
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern.startsWith('**/', i)) {
+      source += '(?:.*/)?';
+      i += 2;
+    } else if (pattern.startsWith('**', i)) {
+      source += '.*';
+      i += 1;
+    } else if (pattern[i] === '*') {
+      source += '[^/]*';
+    } else {
+      source += pattern[i].replace(/[.^$+?()[\]{}|\\/]/g, '\\$&');
+    }
+  }
+  const re = new RegExp(`^${source}$`);
+  return (f) => re.test(f);
+}
+
+/**
+ * The repo's CI, as a list of gates: `{ workflow, paths, pathsIgnore, requiredLanes }`.
  *
  * Why a list. A repo with more than one path-filtered workflow cannot be
  * described by one path list and one lane list. Declare only the first
@@ -144,6 +181,14 @@ const isStringList = (v) => Array.isArray(v) && v.every((x) => typeof x === 'str
  * claim about ONE workflow, so it is enforced only when that workflow's own
  * filter matches the diff.
  *
+ * `pathsIgnore` mirrors a workflow's `paths-ignore`: a diff dispatches the
+ * workflow unless EVERY changed file matches it. Without it, a workflow that
+ * filters only by `paths-ignore` cannot be described: `["**"]` waits on a
+ * docs-only PR for a run GitHub never starts (until the checks timeout, exit 30),
+ * and listing the directories CI covers stops being true the day a new root
+ * directory appears, which then reads as "no CI applies" and merges unverified.
+ * Optional and empty by default, so a gate without it behaves exactly as before.
+ *
  * The legacy shape (top-level `ciPaths` / `requiredLanes`) is exactly one gate,
  * so it is read as one, with unchanged behaviour. Declaring both shapes is
  * rejected rather than merged: which of the two was meant is not guessable.
@@ -152,7 +197,7 @@ function normalizeCiGates(overrides) {
   const legacy = 'ciPaths' in overrides || 'requiredLanes' in overrides;
   if (overrides.ciGates === undefined) {
     if (!legacy) return [];
-    return [{ workflow: null, paths: overrides.ciPaths || [], requiredLanes: overrides.requiredLanes || [] }];
+    return [{ workflow: null, paths: overrides.ciPaths || [], pathsIgnore: [], requiredLanes: overrides.requiredLanes || [] }];
   }
   if (legacy) {
     throw new Error(`${CONFIG_FILENAME}: declare ciGates OR the legacy ciPaths/requiredLanes, not both`);
@@ -170,11 +215,19 @@ function normalizeCiGates(overrides) {
     if (!isStringList(gate.paths) || gate.paths.length === 0) {
       throw new Error(`${at}.paths must be a non-empty list of path prefixes (or ["**"])`);
     }
+    const pathsIgnore = gate.pathsIgnore ?? [];
+    if (!isStringList(pathsIgnore)) {
+      throw new Error(`${at}.pathsIgnore must be a list of path patterns (the workflow's paths-ignore)`);
+    }
+    const unsupported = pathsIgnore.filter((p) => UNSUPPORTED_FILTER_SYNTAX.test(p));
+    if (unsupported.length) {
+      throw new Error(`${at}.pathsIgnore: only * and ** are supported, not ${JSON.stringify(unsupported)}`);
+    }
     const requiredLanes = gate.requiredLanes ?? [];
     if (!isStringList(requiredLanes)) {
       throw new Error(`${at}.requiredLanes must be a list of check names`);
     }
-    return { workflow: gate.workflow, paths: gate.paths, requiredLanes };
+    return { workflow: gate.workflow, paths: gate.paths, pathsIgnore, requiredLanes };
   });
 }
 
@@ -275,10 +328,16 @@ function hardStopHits(files, commitMessages = '', cfg = CONFIG) {
   return hits;
 }
 
-/** `["**"]` means that workflow has no path filter and always runs. */
+/**
+ * `["**"]` means that workflow has no `paths` filter. Files matching the gate's
+ * `pathsIgnore` count for nothing, as on GitHub: a diff made only of them
+ * dispatches no run.
+ */
 function gateCovers(gate, files) {
-  if (gate.paths.includes('**')) return files.length > 0;
-  return touches(files, gate.paths).length > 0;
+  const ignored = (gate.pathsIgnore || []).map(filterMatcher);
+  const counted = ignored.length ? files.filter((f) => !ignored.some((matches) => matches(f))) : files;
+  if (gate.paths.includes('**')) return counted.length > 0;
+  return touches(counted, gate.paths).length > 0;
 }
 
 /** The gates whose workflow this diff dispatches. */
@@ -1200,7 +1259,7 @@ if (require.main === module) {
 
 module.exports = {
   CONFIG, DEFAULTS, EXIT, ACTION,
-  loadConfig, decide, hardStopHits, ciCovers, gatesFor, requiredLanesFor, baseMovement, touches, reviewFor,
+  loadConfig, decide, hardStopHits, ciCovers, gatesFor, filterMatcher, requiredLanesFor, baseMovement, touches, reviewFor,
   integrationVerdictPath, readIntegrationVerdictFile, judgeIntegrationVerdict,
   integrationScratchRoot, runIntegrationCheck, killProcessesUnder, INTEGRATION_CHECK_CANNOT_RUN,
   checksVerdict, runIdOf, queueStateFrom, pickBranchPr, headCarriesWorkBeyond, rebaseOnto,

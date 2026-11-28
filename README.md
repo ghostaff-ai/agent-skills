@@ -168,7 +168,8 @@ review gate rather than silently auto-merging something it never declared.
       "paths": ["src/", "functions/", "package.json", "pnpm-lock.yaml"],
       "requiredLanes": ["Lint + Unit"]
     },
-    { "workflow": "console-ci.yml", "paths": ["apps/console/"], "requiredLanes": ["Console unit"] }
+    { "workflow": "console-ci.yml", "paths": ["apps/console/"], "requiredLanes": ["Console unit"] },
+    { "workflow": "docs-aware.yml", "paths": ["**"], "pathsIgnore": ["**/*.md", "docs/"] }
   ],
   "sharedBlastRadius": ["packages/shared/", "pnpm-lock.yaml"],
   "integrationCheck": { "command": "pnpm -s typecheck" },
@@ -183,6 +184,18 @@ review gate rather than silently auto-merging something it never declared.
   mirror that workflow's path filter** (`["**"]` for a workflow with none). If they drift,
   the vacuous-green guard either blocks needlessly or — worse — reads "no run dispatched" as
   "tests passed". A diff matching no gate is marked UNVERIFIED and rests on review alone.
+- `pathsIgnore` (optional, default `[]`) mirrors that workflow's `paths-ignore`: the
+  workflow dispatches unless **every** changed file matches it, so a diff made only of
+  ignored files is UNVERIFIED and owes none of the gate's `requiredLanes`. Use it, with
+  `paths: ["**"]`, for a workflow filtered only by `paths-ignore`. Neither alternative
+  works there: `["**"]` alone waits on a docs-only PR for a run GitHub never starts (the
+  checks timeout, exit `30`), and listing the directories CI covers reads a new root
+  directory as "no CI applies" and merges it unverified. Patterns support `*` (never
+  crosses a `/`) and `**` (`**/*.md` also matches a root `README.md`, as on GitHub); an
+  entry without `*` is a `dir/` prefix or one exact file, as in `paths`. `?`, `+`, `[]`
+  and `!` are rejected at load rather than read differently from GitHub. Like `paths`,
+  it must mirror the workflow exactly: an entry GitHub does not ignore lets a PR merge
+  before that workflow has finished.
 - `requiredLanes` are exact check names (as `gh pr checks` prints them) that must reach
   SUCCESS: SKIPPED counts as failed, and not-yet-reported counts as pending. They are
   enforced **only when their own gate matches the diff** — that is why they live per gate.
